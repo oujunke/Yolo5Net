@@ -10,6 +10,7 @@ using Tensorflow.Keras.Engine;
 using Tensorflow.Operations;
 using Tensorflow.Operations.Initializers;
 using static HDF.PInvoke.H5Z;
+using static System.Formats.Asn1.AsnWriter;
 
 namespace Yolo5Net
 {
@@ -119,76 +120,107 @@ namespace Yolo5Net
             x = Csp(x, (int)Math.Round(width * 1024), (int)Math.Round(depth * 3), false);
             var p5 = KerasApi.keras.layers.Conv2D(3 * (ConfigUtils.ClassDict.Count + 5), 1,
                                  kernel_initializer: initializer, kernel_regularizer: l2).SetName($"'p4_{ConfigUtils.ClassDict.Count}'").Apply(x);
-            if (training) {
-                return KerasApi.keras.Model(inputs, new Tensors( p5, p4, p3 )); 
+            if (training)
+            {
+                return KerasApi.keras.Model(inputs, new Tensors(p5, p4, p3));
             }
-            else {
-                return KerasApi.keras.Model(inputs, Predict()([p5, p4, p3]))}
+            else
+            {
+                return KerasApi.keras.Model(inputs, Predict(p5, p4, p3));
+            }
         }
-        public static void ProcessLayer(Tensors feature_map, Tensor tensor)
+        public static (Tensor, Tensor, Tensor, Tensor) ProcessLayer(Tensors feature_map, Tensor anchors)
         {
             var grid_size = feature_map.shape[1..3];
-            nn_ops
-    ratio = tf.cast(tf.constant([config.image_size, config.image_size]) / grid_size, tf.float32)
-    rescaled_anchors = [(anchor[0] / ratio[1], anchor[1] / ratio[0]) for anchor in anchors]
+            var ratio = math_ops.cast(constant_op.constant(new[] { ConfigUtils.ImageSize, ConfigUtils.ImageSize }) / grid_size, TF_DataType.TF_FLOAT);
+            var rescaled_anchors = anchors.numpy().Select(na => new[] { na[0] / ratio[1], na[1] / ratio[0] }).ToArray();
 
-    feature_map = tf.reshape(feature_map, [-1, grid_size[0], grid_size[1], 3, 5 + len(config.class_dict)])
+            feature_map = array_ops.reshape(feature_map, new Tensor(new[] { -1, grid_size[0], grid_size[1], 3, 5 + ConfigUtils.ClassDict.Count }));
+            var spRes = array_ops.split(feature_map, new Tensor(new[] { 2, 2, 1, ConfigUtils.ClassDict.Count }), -1);
+            var box_centers = spRes[0];
+            var box_sizes = spRes[1];
+            var conf = spRes[2];
+            var prob = spRes[3];
+            box_centers = math_ops.sigmoid(box_centers);
 
-    box_centers, box_sizes, conf, prob = tf.split(feature_map, [2, 2, 1, len(config.class_dict)], axis = -1)
-    box_centers = tf.nn.sigmoid(box_centers)
+            var grid_x = math_ops.range(grid_size[1], dtype: TF_DataType.TF_INT32);
+            var grid_y = math_ops.range(grid_size[0], dtype: TF_DataType.TF_INT32);
+            var mesRes = array_ops.meshgrid(new[] { grid_x, grid_y });
+            grid_x = mesRes[0];
+            grid_y = mesRes[1];
+            var x_offset = array_ops.reshape(grid_x, new Tensor(new[] { -1, 1 }));
+            var y_offset = array_ops.reshape(grid_y, new Tensor(new[] { -1, 1 }));
+            var x_y_offset = array_ops.concat(new[] { x_offset, y_offset }, -1);
+            x_y_offset = math_ops.cast(array_ops.reshape(x_y_offset, new Tensor(new[] { grid_size[0], grid_size[1], 1, 2 })), dtype: TF_DataType.TF_FLOAT);
+            box_centers = box_centers + x_y_offset;
+            var descRatio = gen_array_ops.reverse(ratio, -1);
+            box_centers = box_centers * descRatio;
 
-    grid_x = tf.range(grid_size[1], dtype = tf.int32)
-    grid_y = tf.range(grid_size[0], dtype = tf.int32)
-    grid_x, grid_y = tf.meshgrid(grid_x, grid_y)
-    x_offset = tf.reshape(grid_x, (-1, 1))
-    y_offset = tf.reshape(grid_y, (-1, 1))
-    x_y_offset = tf.concat([x_offset, y_offset], axis = -1)
-                x_y_offset = tf.cast(tf.reshape(x_y_offset, [grid_size[0], grid_size[1], 1, 2]), tf.float32)
 
-    box_centers = box_centers + x_y_offset
-    box_centers = box_centers * ratio[::- 1]
+            box_sizes = gen_math_ops.exp(box_sizes) * rescaled_anchors;
 
-    box_sizes = tf.exp(box_sizes) * rescaled_anchors
-    box_sizes = box_sizes * ratio[::- 1]
+            box_sizes = box_sizes * descRatio;
 
-    boxes = tf.concat([box_centers, box_sizes], axis = -1)
 
-    return x_y_offset, boxes, conf, prob
+            var boxes = array_ops.concat(new[] { box_centers, box_sizes }, -1);
+
+            return (x_y_offset, boxes, conf, prob);
         }
         public static Functional Predict(params Tensors[] inputs)
         {
-
+            List<Tensor> boxes_list = new List<Tensor>();
+            List<Tensor> conf_list = new List<Tensor>();
+            List<Tensor> prob_list = new List<Tensor>();
             for (int i = 0; i < inputs.Length; i++)
             {
                 var feature_map = inputs[0];
-                var anchors = ConfigUtils.Anchors.slice(new Slice((3-i-1)*3, (3 - i) * 3));
-                x_y_offset, box, conf, prob = result
-            grid_size = tf.shape(x_y_offset)[:2]
-            box = tf.reshape(box, [-1, grid_size[0] * grid_size[1] * 3, 4])
-            conf = tf.reshape(conf, [-1, grid_size[0] * grid_size[1] * 3, 1])
-            prob = tf.reshape(prob, [-1, grid_size[0] * grid_size[1] * 3, len(config.class_dict)])
-            boxes_list.append(box)
-            conf_list.append(tf.sigmoid(conf))
-            prob_list.append(tf.sigmoid(prob))
+                var anchors = ConfigUtils.Anchors.slice(new Slice((3 - i - 1) * 3, (3 - i) * 3));
+                var (x_y_offset, box, conf2, prob2) = ProcessLayer(feature_map, anchors);
+                var grid_size = x_y_offset.shape.Slice(0, 2);
+                box = array_ops.reshape(box, new Tensor(new[] { -1, grid_size[0] * grid_size[1] * 3, 4 }));
+                conf2 = array_ops.reshape(conf2, new Tensor(new[] { -1, grid_size[0] * grid_size[1] * 3, 1 }));
+                prob2 = array_ops.reshape(prob2, new Tensor(new[] { -1, grid_size[0] * grid_size[1] * 3, ConfigUtils.ClassDict.Count }));
+                boxes_list.append(box);
+                conf_list.append(math_ops.sigmoid(conf2));
+                prob_list.append(math_ops.sigmoid(prob2));
             }
-        boxes = tf.concat(boxes_list, axis = 1)
-        conf = tf.concat(conf_list, axis = 1)
-        prob = tf.concat(prob_list, axis = 1)
+            var boxes = array_ops.concat(boxes_list.ToArray(), 1);
+            var conf = array_ops.concat(conf_list.ToArray(), 1);
+            var prob = array_ops.concat(prob_list.ToArray(), 1);
+            var spRes = array_ops.split(boxes, new Tensor(new[] { 1, 1, 1, 1 }), -1);
+            var center_x = spRes[0];
+            var center_y = spRes[1];
+            var w = spRes[2];
+            var h = spRes[3];
+            var x_min = center_x - w / 2;
+            var y_min = center_y - h / 2;
+            var x_max = center_x + w / 2;
+            var y_max = center_y + h / 2;
 
-        center_x, center_y, w, h = tf.split(boxes, [1, 1, 1, 1], axis = -1)
-        x_min = center_x - w / 2
-        y_min = center_y - h / 2
-        x_max = center_x + w / 2
-        y_max = center_y + h / 2
+            boxes = array_ops.concat(new[] { x_min, y_min, x_max, y_max }, -1);
 
-        boxes = tf.concat([x_min, y_min, x_max, y_max], axis = -1)
+            /*var outputs = Operation.map_fn(fn = compute_nms,
+                                 elems =[boxes, conf * prob],
+                                 dtype =['float32', 'float32', 'int32'],
+                                 parallel_iterations = 100)
 
-        outputs = tf.map_fn(fn = compute_nms,
-                            elems =[boxes, conf * prob],
-                            dtype =['float32', 'float32', 'int32'],
-                            parallel_iterations = 100)
-
-        return outputs
+        return outputs*/
+            return null;
         }
+        public static Tensor NmsFn(Tensor boxes, Tensor score, Tensor label)
+        {
+            var score_indices = array_ops.where(gen_math_ops.greater(score, ConfigUtils.Threshold));
+            var filtered_boxes = gen_ops.gather_nd(boxes, score_indices);
+            var filtered_scores = gen_ops.gather(score, score_indices).slice(0).slice(new Slice(0, 1));
+            var nms_indices = tf.image.non_max_suppression(filtered_boxes, filtered_scores, config.max_boxes, 0.1)
+        }
+
+        nms_indices = tf.image.non_max_suppression(filtered_boxes, filtered_scores, config.max_boxes, 0.1)
+        score_indices = backend.gather(score_indices, nms_indices)
+
+        label = tf.gather_nd(label, score_indices)
+        score_indices = backend.stack([score_indices[:, 0], label], axis=1)
+
+        return score_indices
     }
 }
