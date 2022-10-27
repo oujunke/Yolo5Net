@@ -11,6 +11,7 @@ using Tensorflow.Operations;
 using Tensorflow.Operations.Initializers;
 using static HDF.PInvoke.H5Z;
 using static System.Formats.Asn1.AsnWriter;
+using static Tensorflow.ApiDef.Types;
 
 namespace Yolo5Net
 {
@@ -166,7 +167,7 @@ namespace Yolo5Net
 
             return (x_y_offset, boxes, conf, prob);
         }
-        public static Functional Predict(params Tensors[] inputs)
+        public static Tensor Predict(params Tensors[] inputs)
         {
             List<Tensor> boxes_list = new List<Tensor>();
             List<Tensor> conf_list = new List<Tensor>();
@@ -199,28 +200,61 @@ namespace Yolo5Net
 
             boxes = array_ops.concat(new[] { x_min, y_min, x_max, y_max }, -1);
 
-            /*var outputs = Operation.map_fn(fn = compute_nms,
-                                 elems =[boxes, conf * prob],
-                                 dtype =['float32', 'float32', 'int32'],
-                                 parallel_iterations = 100)
+            var outputs = Operation.map_fn(ComputeNms,
+                                 new Tensor(new[] { boxes, conf * prob }), TF_DataType.TF_INT32,
+                                 100);
 
-        return outputs*/
-            return null;
+            return outputs;
         }
         public static Tensor NmsFn(Tensor boxes, Tensor score, Tensor label)
         {
             var score_indices = array_ops.where(gen_math_ops.greater(score, ConfigUtils.Threshold));
             var filtered_boxes = gen_ops.gather_nd(boxes, score_indices);
-            var filtered_scores = gen_ops.gather(score, score_indices).slice(0).slice(new Slice(0, 1));
-            var nms_indices = tf.image.non_max_suppression(filtered_boxes, filtered_scores, config.max_boxes, 0.1)
+            var filtered_scores = gen_ops.gather(score, score_indices).slice(new Slice(null, null, 0));
+            var nms_indices = gen_ops.non_max_suppression(filtered_boxes, filtered_scores, new Tensor(ConfigUtils.MaxBoxes), 0.1f);
+            score_indices = gen_ops.gather(score_indices, nms_indices);
+            label = gen_ops.gather_nd(label, score_indices);
+            score_indices = array_ops.stack(new Tensor[] { score_indices.slice(new Slice(null, null, 0)), label }, 1);
+            return score_indices;
+        }
+        public static Tensor ComputeNms(Tensor tensor)
+        {
+            Tensor boxes = tensor[0];
+            Tensor classification = tensor[1];
+            var count = classification.shape[1];
+            List<Tensor> all_indices = new List<Tensor>();
+            for (int i = 0; i < count; i++)
+            {
+                var scores = classification.slice(new Slice(0, 0, i));
+                var labels = i * array_ops.ones((gen_ops.shape(scores)[0]), TF_DataType.TF_INT64);
+                all_indices.append(NmsFn(boxes, scores, labels));
+            }
+            var indices = (Tensor)KerasApi.keras.layers.Concatenate(0).Apply(all_indices);
+            var scores2 = gen_ops.gather_nd(classification, indices);
+            var labels2 = indices.slice(new Slice(null, null));
+            var (scores3, top_indices) = gen_ops.top_k(scores2, (int)gen_ops.minimum(new Tensor(ConfigUtils.MaxBoxes), new Tensor(scores2.shape[0])));
+
+            indices = gen_ops.gather(indices.slice(new Slice(null, null, 0)), top_indices);
+            boxes = gen_ops.gather(boxes, indices);
+            labels2 = gen_ops.gather(labels2, top_indices);
+
+            var pad_size = gen_ops.maximum(new Tensor(0), new Tensor(ConfigUtils.MaxBoxes - scores2.shape[0]));
+
+            boxes = gen_ops.pad_v2(boxes, new Tensor(new int[,] { { 0, (int)pad_size }, { 0, 0 } }), new Tensor(-1));
+            scores3 = gen_ops.pad_v2(scores3, new Tensor(new int[,] { { 0, (int)pad_size } }), new Tensor(-1));
+            labels2 = gen_ops.pad_v2(labels2, new Tensor(new int[,] { { 0, (int)pad_size } }), new Tensor(-1));
+            labels2 = gen_ops.cast(labels2, TF_DataType.TF_INT32);
+
+            boxes.set_shape(new Tensor(new[] { ConfigUtils.MaxBoxes, 4 }));
+            scores3.set_shape(new Tensor(new[] { ConfigUtils.MaxBoxes }));
+            labels2.set_shape(new Tensor(new[] { ConfigUtils.MaxBoxes }));
+
+            return new Tensor(new[] { boxes, scores3, labels2 });
         }
 
-        nms_indices = tf.image.non_max_suppression(filtered_boxes, filtered_scores, config.max_boxes, 0.1)
-        score_indices = backend.gather(score_indices, nms_indices)
 
-        label = tf.gather_nd(label, score_indices)
-        score_indices = backend.stack([score_indices[:, 0], label], axis=1)
 
-        return score_indices
+
+
     }
 }
