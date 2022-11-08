@@ -8,6 +8,10 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="NumSharp" Version="0.30.0" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\Yolo5Net\Yolo5Net.csproj" />
   </ItemGroup>
 

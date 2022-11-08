@@ -11,7 +11,7 @@ namespace Yolo5Net
     {
         public static Layer SetName(this Layer layer,string name)
         {
-            layer.SetName(name);
+            //layer.SetName(name);
             return layer; 
         }
     }

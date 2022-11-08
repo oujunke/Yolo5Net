@@ -1,18 +1,20 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Net.WebSockets;
 using System.Text;
 using System.Threading.Tasks;
 using System.Xml.Linq;
 using Tensorflow;
 using Tensorflow.Keras;
 using Tensorflow.Keras.Engine;
+using Tensorflow.NumPy;
 using Tensorflow.Operations;
 using Tensorflow.Operations.Initializers;
 using static HDF.PInvoke.H5Z;
 using static System.Formats.Asn1.AsnWriter;
 using static Tensorflow.ApiDef.Types;
-
+using static Tensorflow.Binding;
 namespace Yolo5Net
 {
     internal class NetUtils
@@ -71,12 +73,18 @@ namespace Yolo5Net
 
         public static Functional BuildModel(bool training = true)
         {
+            tf.init_scope();
+            for (int i = 0; i < 1000; i++)
+            {
+                //Thread.Sleep(1000);
+            }
             var vindex = ConfigUtils.Versions.IndexOf(ConfigUtils.Version);
             var depth = ConfigUtils.Depth[vindex];
             var width = ConfigUtils.Width[vindex];
 
             var inputs = KerasApi.keras.layers.Input(new Shape(ConfigUtils.ImageSize, ConfigUtils.ImageSize, 3));
-            var x = gen_ops.space_to_batch(inputs, new Tensor(new int[2, 2]), 2);
+            Console.WriteLine(tf.VERSION);
+            Tensor x = KerasApi.keras.layers.Conv2D(12, new Shape(2,2), new Shape(2,2), "same", use_bias: false, kernel_regularizer: l2, kernel_initializer: initializer).Apply(inputs);
             x = Conv(x, (int)Math.Round(width * 64), 3);
             x = Conv(x, (int)Math.Round(width * 128), 3, 2);
             x = Csp(x, (int)Math.Round(width * 128), (int)Math.Round(depth * 3));
@@ -108,19 +116,19 @@ namespace Yolo5Net
             x = KerasApi.keras.layers.Concatenate().Apply(new[] { x, x1 });
             x = Csp(x, (int)Math.Round(width * 256), (int)Math.Round(depth * 3), false);
             var p3 = KerasApi.keras.layers.Conv2D(3 * (ConfigUtils.ClassDict.Count + 5), 1,
-                                kernel_initializer: initializer, kernel_regularizer: l2).SetName($"'p3_{ConfigUtils.ClassDict.Count}'").Apply(x);
+                                kernel_initializer: initializer, kernel_regularizer: l2).Apply(x);
 
             x = Conv(x, (int)Math.Round(width * 256), 3, 2);
             x = KerasApi.keras.layers.Concatenate().Apply(new[] { x, x4 });
             x = Csp(x, (int)Math.Round(width * 512), (int)Math.Round(depth * 3), false);
             var p4 = KerasApi.keras.layers.Conv2D(3 * (ConfigUtils.ClassDict.Count + 5), 1,
-                               kernel_initializer: initializer, kernel_regularizer: l2).SetName($"'p4_{ConfigUtils.ClassDict.Count}'").Apply(x);
+                               kernel_initializer: initializer, kernel_regularizer: l2).Apply(x);
 
             x = Conv(x, (int)Math.Round(width * 512), 3, 2);
             x = KerasApi.keras.layers.Concatenate().Apply(new[] { x, x3 });
             x = Csp(x, (int)Math.Round(width * 1024), (int)Math.Round(depth * 3), false);
             var p5 = KerasApi.keras.layers.Conv2D(3 * (ConfigUtils.ClassDict.Count + 5), 1,
-                                 kernel_initializer: initializer, kernel_regularizer: l2).SetName($"'p4_{ConfigUtils.ClassDict.Count}'").Apply(x);
+                                 kernel_initializer: initializer, kernel_regularizer: l2).Apply(x);
             if (training)
             {
                 return KerasApi.keras.Model(inputs, new Tensors(p5, p4, p3));
@@ -251,10 +259,5 @@ namespace Yolo5Net
 
             return new Tensor(new[] { boxes, scores3, labels2 });
         }
-
-
-
-
-
     }
 }
